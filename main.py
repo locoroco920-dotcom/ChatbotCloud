@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+from typing import Any
 import logging
 from openai import OpenAI
 
@@ -62,9 +63,9 @@ else:
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 faq_data = None
-questions = None
-answers = None
-model = None
+questions: list[str] = []
+answers: list[str] = []
+model: Any = None
 question_embeddings = None
 
 class Query(BaseModel):
@@ -107,6 +108,8 @@ def _load_embeddings_once() -> None:
 
     _load_faq_data_once()
     _load_model_once()
+    if not questions:
+        raise HTTPException(status_code=500, detail="FAQ data is empty")
     question_embeddings = model.encode(questions)
 
 
@@ -118,6 +121,8 @@ def _extract_user_question(query: Query) -> str:
 
 def _generate_answer(user_question: str) -> Response:
     _load_embeddings_once()
+    if not answers:
+        raise HTTPException(status_code=500, detail="FAQ answers are unavailable")
     user_embedding = model.encode([user_question])
     similarities = np.dot(question_embeddings, user_embedding.T).flatten()
     best_match_index = np.argmax(similarities)
