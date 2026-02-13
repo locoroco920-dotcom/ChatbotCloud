@@ -123,6 +123,8 @@ def _generate_answer(user_question: str) -> Response:
     _load_embeddings_once()
     if not answers:
         raise HTTPException(status_code=500, detail="FAQ answers are unavailable")
+    if question_embeddings is None:
+        raise HTTPException(status_code=500, detail="Question embeddings are unavailable")
     user_embedding = model.encode([user_question])
     similarities = np.dot(question_embeddings, user_embedding.T).flatten()
     best_match_index = np.argmax(similarities)
