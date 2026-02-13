@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: meadowlands-chatbot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: WIDGET_API_KEY
+        sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false

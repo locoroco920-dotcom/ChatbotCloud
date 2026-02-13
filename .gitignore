@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and runtime artifacts
+*.log
+questions_log*.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Model / cache artifacts
+.cache/
+*.sqlite3
+
+# Local pip output artifact files
+0.0.6
+0.20.0
+0.100.0
+1.0.0
+1.20.0
+2.0.0
+5.0.0
