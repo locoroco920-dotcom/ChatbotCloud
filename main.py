@@ -2,6 +2,7 @@ import json
 import os
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi.responses import Response as FastAPIResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -159,6 +160,16 @@ async def chat(query: Query, x_api_key: Optional[str] = Header(default=None)):
 @app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {"message": "FAQ Chatbot API is running"}
+
+
+@app.head("/")
+def head_root():
+    return FastAPIResponse(status_code=200)
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FastAPIResponse(status_code=204)
 
 
 @app.get("/health")
