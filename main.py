@@ -156,7 +156,7 @@ async def chat(query: Query, x_api_key: Optional[str] = Header(default=None)):
     user_question = _extract_user_question(query)
     return _generate_answer(user_question)
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {"message": "FAQ Chatbot API is running"}
 
