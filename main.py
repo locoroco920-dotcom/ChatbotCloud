@@ -4,7 +4,6 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 from typing import Optional
 import logging
 from openai import OpenAI
@@ -61,30 +60,64 @@ else:
         allow_headers=["*"],
     )
 
-# Load FAQ data
-with open("faq_data.json", "r") as f:
-    faq_data = json.load(f)
-
-questions = [item["question"] for item in faq_data]
-answers = [item["answer"] for item in faq_data]
-
-# Initialize the model
-# 'all-MiniLM-L6-v2' is a small, fast model suitable for this task
-print("Loading model...")
-model = SentenceTransformer('all-MiniLM-L6-v2')
-print("Model loaded.")
-
-# Pre-compute embeddings for FAQ questions
-question_embeddings = model.encode(questions)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+faq_data = None
+questions = None
+answers = None
+model = None
+question_embeddings = None
 
 class Query(BaseModel):
-    question: str
+    question: Optional[str] = None
+    message: Optional[str] = None
 
 class Response(BaseModel):
     answer: str
     confidence: float
 
+
+def _load_faq_data_once() -> None:
+    global faq_data, questions, answers
+    if faq_data is not None:
+        return
+
+    faq_path = os.path.join(SCRIPT_DIR, "faq_data.json")
+    with open(faq_path, "r", encoding="utf-8") as f:
+        faq_data = json.load(f)
+
+    questions = [item["question"] for item in faq_data]
+    answers = [item["answer"] for item in faq_data]
+
+
+def _load_model_once() -> None:
+    global model
+    if model is not None:
+        return
+
+    logger.info("Loading sentence-transformer model")
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
+
+def _load_embeddings_once() -> None:
+    global question_embeddings
+    if question_embeddings is not None:
+        return
+
+    _load_faq_data_once()
+    _load_model_once()
+    question_embeddings = model.encode(questions)
+
+
+def _extract_user_question(query: Query) -> str:
+    user_question = (query.question or query.message or "").strip()
+    if not user_question:
+        raise HTTPException(status_code=400, detail="question is required")
+    return user_question
+
 def _generate_answer(user_question: str) -> Response:
+    _load_embeddings_once()
     user_embedding = model.encode([user_question])
     similarities = np.dot(question_embeddings, user_embedding.T).flatten()
     best_match_index = np.argmax(similarities)
@@ -102,7 +135,8 @@ def _generate_answer(user_question: str) -> Response:
 
 @app.post("/ask", response_model=Response)
 async def ask_question(query: Query):
-    return _generate_answer(query.question)
+    user_question = _extract_user_question(query)
+    return _generate_answer(user_question)
 
 
 @app.post("/chat", response_model=Response)
@@ -112,7 +146,8 @@ async def chat(query: Query, x_api_key: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=503, detail="WIDGET_API_KEY is not configured")
     if not x_api_key or x_api_key != expected_api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    return _generate_answer(query.question)
+    user_question = _extract_user_question(query)
+    return _generate_answer(user_question)
 
 @app.get("/")
 def read_root():
