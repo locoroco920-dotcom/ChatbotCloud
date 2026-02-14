@@ -37,6 +37,7 @@ def _init_openai_client() -> Optional[OpenAI]:
 
 
 openai_client = _init_openai_client()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -160,11 +161,39 @@ def _fallback_answer(user_question: str) -> Response:
 
     threshold = 0.3
     if best_score < threshold:
+        openai_response = _openai_fallback(user_question)
+        if openai_response is not None:
+            return openai_response
         return Response(
             answer="I'm sorry, I don't have an answer for that. Please contact support.",
             confidence=best_score,
         )
     return Response(answer=answers[best_match_index], confidence=best_score)
+
+
+def _openai_fallback(user_question: str) -> Optional[Response]:
+    if openai_client is None:
+        return None
+    try:
+        completion = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are Murray the Meadowlands ambassador. Reply in 1-2 short, helpful sentences.",
+                },
+                {"role": "user", "content": user_question},
+            ],
+            max_tokens=80,
+            temperature=0.7,
+            timeout=12,
+        )
+        content = completion.choices[0].message.content
+        if content:
+            return Response(answer=content.strip(), confidence=0.7)
+    except Exception as exc:
+        logger.warning(f"OpenAI fallback failed: {exc}")
+    return None
 
 
 def _extract_user_question(query: Query) -> str:
@@ -191,6 +220,9 @@ def _generate_answer(user_question: str) -> Response:
 
     threshold = 0.5
     if best_similarity < threshold:
+        openai_response = _openai_fallback(user_question)
+        if openai_response is not None:
+            return openai_response
         return Response(
             answer="I'm sorry, I don't have an answer for that. Please contact support.",
             confidence=best_similarity,
