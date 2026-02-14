@@ -37,7 +37,7 @@ def _init_openai_client() -> Optional[OpenAI]:
 
 
 openai_client = _init_openai_client()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+OPENAI_MODEL = "gpt-3.5-turbo"
 ENABLE_EMBEDDINGS = os.getenv("ENABLE_EMBEDDINGS", "false").lower() == "true"
 
 @app.middleware("http")
@@ -175,7 +175,7 @@ def _fallback_answer(user_question: str) -> Response:
 def _openai_fallback(user_question: str) -> Optional[Response]:
     if openai_client is None:
         return None
-    model_candidates = [OPENAI_MODEL, "gpt-3.5-turbo", "gpt-4o-mini"]
+    model_candidates = [OPENAI_MODEL]
     tried = set()
     last_error = None
 
