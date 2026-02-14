@@ -142,8 +142,8 @@ def _openai_fallback(user_question: str, faq_context: Optional[str]) -> Optional
         try:
             if faq_context:
                 user_content = (
-                    "Use this FAQ context to answer accurately in 1-2 sentences. "
-                    "If context is insufficient, answer briefly and say you are unsure.\n\n"
+                    "Use ONLY this FAQ context for facts, and answer in 1-2 short sentences. "
+                    "If context is missing details, say so briefly.\n\n"
                     f"Context:\n{faq_context}\n\nUser question: {user_question}"
                 )
             else:
@@ -154,7 +154,7 @@ def _openai_fallback(user_question: str, faq_context: Optional[str]) -> Optional
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are Murray the Meadowlands ambassador. Reply in 1-2 short, helpful sentences.",
+                        "content": "You are Murray, a Meadowlands ambassador with a friendly Jersey voice. Keep replies to 1-2 short sentences, use light Jersey phrasing (like 'ya know', 'down the shore', 'fuhgeddaboutit' sparingly), and stay helpful.",
                     },
                     {"role": "user", "content": user_content},
                 ],
@@ -200,7 +200,7 @@ def _generate_answer(user_question: str) -> Response:
     best_similarity = ranked[0][1] if ranked else 0.0
 
     faq_context = None
-    if ranked and best_similarity >= 0.2:
+    if ranked and best_similarity >= 0.12:
         snippets = []
         for idx, _score in ranked:
             snippets.append(f"Q: {questions[idx]}\nA: {answers[idx]}")
@@ -211,6 +211,10 @@ def _generate_answer(user_question: str) -> Response:
         if faq_context:
             openai_response.confidence = max(openai_response.confidence, min(0.92, best_similarity + 0.2))
         return openai_response
+
+    if ranked and best_similarity >= 0.15:
+        best_idx = ranked[0][0]
+        return Response(answer=answers[best_idx], confidence=max(0.55, best_similarity))
 
     return _fallback_answer(user_question)
 
