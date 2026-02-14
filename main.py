@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.responses import Response as FastAPIResponse
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from typing import Any
 import logging
+from difflib import SequenceMatcher
 from openai import OpenAI
 
 # Configure logging
@@ -68,6 +70,8 @@ questions: list[str] = []
 answers: list[str] = []
 model: Any = None
 question_embeddings = None
+_model_loading_started = False
+_model_load_lock = threading.Lock()
 
 class Query(BaseModel):
     question: Optional[str] = None
@@ -114,6 +118,55 @@ def _load_embeddings_once() -> None:
     question_embeddings = model.encode(questions)
 
 
+def _load_embeddings_background() -> None:
+    try:
+        _load_embeddings_once()
+        logger.info("Sentence-transformer model and embeddings are ready")
+    except Exception as exc:
+        logger.error(f"Background model load failed: {exc}")
+
+
+def _start_background_model_load() -> None:
+    global _model_loading_started
+    if question_embeddings is not None:
+        return
+
+    with _model_load_lock:
+        if _model_loading_started or question_embeddings is not None:
+            return
+        _model_loading_started = True
+
+    thread = threading.Thread(target=_load_embeddings_background, daemon=True)
+    thread.start()
+
+
+def _fallback_answer(user_question: str) -> Response:
+    _load_faq_data_once()
+    if not questions or not answers:
+        return Response(
+            answer="I'm sorry, I don't have an answer for that. Please contact support.",
+            confidence=0.0,
+        )
+
+    normalized_input = user_question.lower().strip()
+    best_match_index = 0
+    best_score = 0.0
+
+    for idx, candidate in enumerate(questions):
+        score = SequenceMatcher(None, normalized_input, candidate.lower()).ratio()
+        if score > best_score:
+            best_score = score
+            best_match_index = idx
+
+    threshold = 0.3
+    if best_score < threshold:
+        return Response(
+            answer="I'm sorry, I don't have an answer for that. Please contact support.",
+            confidence=best_score,
+        )
+    return Response(answer=answers[best_match_index], confidence=best_score)
+
+
 def _extract_user_question(query: Query) -> str:
     user_question = (query.question or query.message or "").strip()
     if not user_question:
@@ -121,7 +174,12 @@ def _extract_user_question(query: Query) -> str:
     return user_question
 
 def _generate_answer(user_question: str) -> Response:
-    _load_embeddings_once()
+    _load_faq_data_once()
+
+    if question_embeddings is None:
+        _start_background_model_load()
+        return _fallback_answer(user_question)
+
     if not answers:
         raise HTTPException(status_code=500, detail="FAQ answers are unavailable")
     if question_embeddings is None:
@@ -175,6 +233,12 @@ def favicon():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.on_event("startup")
+def startup_warmup():
+    _load_faq_data_once()
+    _start_background_model_load()
 
 if __name__ == "__main__":
     import uvicorn
