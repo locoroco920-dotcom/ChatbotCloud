@@ -37,7 +37,8 @@ def _init_openai_client() -> Optional[OpenAI]:
 
 
 openai_client = _init_openai_client()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+ENABLE_EMBEDDINGS = os.getenv("ENABLE_EMBEDDINGS", "false").lower() == "true"
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -174,25 +175,40 @@ def _fallback_answer(user_question: str) -> Response:
 def _openai_fallback(user_question: str) -> Optional[Response]:
     if openai_client is None:
         return None
-    try:
-        completion = openai_client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are Murray the Meadowlands ambassador. Reply in 1-2 short, helpful sentences.",
-                },
-                {"role": "user", "content": user_question},
-            ],
-            max_tokens=80,
-            temperature=0.7,
-            timeout=12,
-        )
-        content = completion.choices[0].message.content
-        if content:
-            return Response(answer=content.strip(), confidence=0.7)
-    except Exception as exc:
-        logger.warning(f"OpenAI fallback failed: {exc}")
+    model_candidates = [OPENAI_MODEL, "gpt-3.5-turbo", "gpt-4o-mini"]
+    tried = set()
+    last_error = None
+
+    for model_name in model_candidates:
+        if model_name in tried:
+            continue
+        tried.add(model_name)
+        try:
+            completion = openai_client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are Murray the Meadowlands ambassador. Reply in 1-2 short, helpful sentences.",
+                    },
+                    {"role": "user", "content": user_question},
+                ],
+                max_tokens=80,
+                temperature=0.7,
+                timeout=12,
+            )
+            content = completion.choices[0].message.content
+            if content:
+                return Response(answer=content.strip(), confidence=0.7)
+        except Exception as exc:
+            last_error = exc
+            if "model_not_found" in str(exc) or "does not have access to model" in str(exc):
+                continue
+            logger.warning(f"OpenAI fallback failed: {exc}")
+            return None
+
+    if last_error is not None:
+        logger.warning(f"OpenAI fallback failed: {last_error}")
     return None
 
 
@@ -204,6 +220,19 @@ def _extract_user_question(query: Query) -> str:
 
 def _generate_answer(user_question: str) -> Response:
     _load_faq_data_once()
+
+    greeting_inputs = {"hi", "hello", "hey", "yo", "sup"}
+    if user_question.lower().strip() in greeting_inputs:
+        openai_response = _openai_fallback(user_question)
+        if openai_response is not None:
+            return openai_response
+        return Response(
+            answer="Hey! I'm Murray the Meadowlands ambassador. Ask me about places to eat, things to do, or local spots.",
+            confidence=0.8,
+        )
+
+    if not ENABLE_EMBEDDINGS:
+        return _fallback_answer(user_question)
 
     if question_embeddings is None:
         _start_background_model_load()
@@ -270,7 +299,8 @@ def health():
 @app.on_event("startup")
 def startup_warmup():
     _load_faq_data_once()
-    _start_background_model_load()
+    if ENABLE_EMBEDDINGS:
+        _start_background_model_load()
 
 if __name__ == "__main__":
     import uvicorn
