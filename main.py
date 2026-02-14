@@ -1,13 +1,10 @@
 import json
 import os
-import threading
-import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.responses import Response as FastAPIResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from typing import Any
 import logging
 from difflib import SequenceMatcher
 from openai import OpenAI
@@ -38,7 +35,6 @@ def _init_openai_client() -> Optional[OpenAI]:
 
 openai_client = _init_openai_client()
 OPENAI_MODEL = "gpt-3.5-turbo"
-ENABLE_EMBEDDINGS = os.getenv("ENABLE_EMBEDDINGS", "false").lower() == "true"
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -70,10 +66,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 faq_data = None
 questions: list[str] = []
 answers: list[str] = []
-model: Any = None
-question_embeddings = None
-_model_loading_started = False
-_model_load_lock = threading.Lock()
 
 class Query(BaseModel):
     question: Optional[str] = None
@@ -97,51 +89,6 @@ def _load_faq_data_once() -> None:
     answers = [item["answer"] for item in faq_data]
 
 
-def _load_model_once() -> None:
-    global model
-    if model is not None:
-        return
-
-    logger.info("Loading sentence-transformer model")
-    from sentence_transformers import SentenceTransformer
-
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-
-
-def _load_embeddings_once() -> None:
-    global question_embeddings
-    if question_embeddings is not None:
-        return
-
-    _load_faq_data_once()
-    _load_model_once()
-    if not questions:
-        raise HTTPException(status_code=500, detail="FAQ data is empty")
-    question_embeddings = model.encode(questions)
-
-
-def _load_embeddings_background() -> None:
-    try:
-        _load_embeddings_once()
-        logger.info("Sentence-transformer model and embeddings are ready")
-    except Exception as exc:
-        logger.error(f"Background model load failed: {exc}")
-
-
-def _start_background_model_load() -> None:
-    global _model_loading_started
-    if question_embeddings is not None:
-        return
-
-    with _model_load_lock:
-        if _model_loading_started or question_embeddings is not None:
-            return
-        _model_loading_started = True
-
-    thread = threading.Thread(target=_load_embeddings_background, daemon=True)
-    thread.start()
-
-
 def _fallback_answer(user_question: str) -> Response:
     _load_faq_data_once()
     if not questions or not answers:
@@ -150,19 +97,18 @@ def _fallback_answer(user_question: str) -> Response:
             confidence=0.0,
         )
 
-    normalized_input = user_question.lower().strip()
-    best_match_index = 0
-    best_score = 0.0
+    ranked = _rank_faq_candidates(user_question, top_k=1)
+    if not ranked:
+        return Response(
+            answer="I'm sorry, I don't have an answer for that. Please contact support.",
+            confidence=0.0,
+        )
 
-    for idx, candidate in enumerate(questions):
-        score = SequenceMatcher(None, normalized_input, candidate.lower()).ratio()
-        if score > best_score:
-            best_score = score
-            best_match_index = idx
+    best_match_index, best_score = ranked[0]
 
     threshold = 0.3
     if best_score < threshold:
-        openai_response = _openai_fallback(user_question)
+        openai_response = _openai_fallback(user_question, None)
         if openai_response is not None:
             return openai_response
         return Response(
@@ -172,7 +118,17 @@ def _fallback_answer(user_question: str) -> Response:
     return Response(answer=answers[best_match_index], confidence=best_score)
 
 
-def _openai_fallback(user_question: str) -> Optional[Response]:
+def _rank_faq_candidates(user_question: str, top_k: int = 3) -> list[tuple[int, float]]:
+    normalized_input = user_question.lower().strip()
+    scored: list[tuple[int, float]] = []
+    for idx, candidate in enumerate(questions):
+        score = SequenceMatcher(None, normalized_input, candidate.lower()).ratio()
+        scored.append((idx, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return scored[:top_k]
+
+
+def _openai_fallback(user_question: str, faq_context: Optional[str]) -> Optional[Response]:
     if openai_client is None:
         return None
     model_candidates = [OPENAI_MODEL]
@@ -184,6 +140,15 @@ def _openai_fallback(user_question: str) -> Optional[Response]:
             continue
         tried.add(model_name)
         try:
+            if faq_context:
+                user_content = (
+                    "Use this FAQ context to answer accurately in 1-2 sentences. "
+                    "If context is insufficient, answer briefly and say you are unsure.\n\n"
+                    f"Context:\n{faq_context}\n\nUser question: {user_question}"
+                )
+            else:
+                user_content = user_question
+
             completion = openai_client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -191,7 +156,7 @@ def _openai_fallback(user_question: str) -> Optional[Response]:
                         "role": "system",
                         "content": "You are Murray the Meadowlands ambassador. Reply in 1-2 short, helpful sentences.",
                     },
-                    {"role": "user", "content": user_question},
+                    {"role": "user", "content": user_content},
                 ],
                 max_tokens=80,
                 temperature=0.7,
@@ -223,7 +188,7 @@ def _generate_answer(user_question: str) -> Response:
 
     greeting_inputs = {"hi", "hello", "hey", "yo", "sup"}
     if user_question.lower().strip() in greeting_inputs:
-        openai_response = _openai_fallback(user_question)
+        openai_response = _openai_fallback(user_question, None)
         if openai_response is not None:
             return openai_response
         return Response(
@@ -231,33 +196,23 @@ def _generate_answer(user_question: str) -> Response:
             confidence=0.8,
         )
 
-    if not ENABLE_EMBEDDINGS:
-        return _fallback_answer(user_question)
+    ranked = _rank_faq_candidates(user_question, top_k=3)
+    best_similarity = ranked[0][1] if ranked else 0.0
 
-    if question_embeddings is None:
-        _start_background_model_load()
-        return _fallback_answer(user_question)
+    faq_context = None
+    if ranked and best_similarity >= 0.2:
+        snippets = []
+        for idx, _score in ranked:
+            snippets.append(f"Q: {questions[idx]}\nA: {answers[idx]}")
+        faq_context = "\n\n".join(snippets)
 
-    if not answers:
-        raise HTTPException(status_code=500, detail="FAQ answers are unavailable")
-    if question_embeddings is None:
-        raise HTTPException(status_code=500, detail="Question embeddings are unavailable")
-    user_embedding = model.encode([user_question])
-    similarities = np.dot(question_embeddings, user_embedding.T).flatten()
-    best_match_index = np.argmax(similarities)
-    best_similarity = float(similarities[best_match_index])
+    openai_response = _openai_fallback(user_question, faq_context)
+    if openai_response is not None:
+        if faq_context:
+            openai_response.confidence = max(openai_response.confidence, min(0.92, best_similarity + 0.2))
+        return openai_response
 
-    threshold = 0.5
-    if best_similarity < threshold:
-        openai_response = _openai_fallback(user_question)
-        if openai_response is not None:
-            return openai_response
-        return Response(
-            answer="I'm sorry, I don't have an answer for that. Please contact support.",
-            confidence=best_similarity,
-        )
-
-    return Response(answer=answers[best_match_index], confidence=best_similarity)
+    return _fallback_answer(user_question)
 
 
 @app.post("/ask", response_model=Response)
@@ -299,8 +254,6 @@ def health():
 @app.on_event("startup")
 def startup_warmup():
     _load_faq_data_once()
-    if ENABLE_EMBEDDINGS:
-        _start_background_model_load()
 
 if __name__ == "__main__":
     import uvicorn
