@@ -241,6 +241,7 @@ def _clean_place_title(question_text: str) -> str:
     title = question_text.replace("What should visitors know about ", "")
     title = title.replace("Where can I find information about ", "")
     title = re.sub(r"\s*-\s*MLCVB.*$", "", title, flags=re.IGNORECASE).strip(" ?")
+    title = re.sub(r"\s*-\s*The Meadowlands Liberty Convention Visitors Bureau.*$", "", title, flags=re.IGNORECASE).strip(" ?")
     return title
 
 
@@ -565,7 +566,7 @@ def _generate_answer(user_question: str) -> Response:
         seen_urls = set()
         seen_titles = set()
         for idx, _score in candidate_ranked:
-            title = questions[idx].replace("What should visitors know about ", "").strip(" ?")
+            title = _clean_place_title(questions[idx])
             if title.lower() in seen_titles:
                 continue
             urls = _extract_urls(answers[idx])
@@ -576,7 +577,7 @@ def _generate_answer(user_question: str) -> Response:
                     seen_urls.add(url)
                     break
             if selected_url:
-                top_entries.append(f"- {title}: {selected_url}")
+                top_entries.append(f"- [{title}]({selected_url})")
             else:
                 top_entries.append(f"- {title}")
             seen_titles.add(title.lower())
