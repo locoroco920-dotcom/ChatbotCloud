@@ -305,6 +305,60 @@ def _extract_location(answer_text: str, url: str) -> str:
     return "Meadowlands, NJ"
 
 
+def _collect_linkable_places(ranked: list[tuple[int, float]], max_items: int = 10) -> list[tuple[str, str]]:
+    places: list[tuple[str, str]] = []
+    seen_titles: set[str] = set()
+    seen_urls: set[str] = set()
+
+    for idx, _score in ranked:
+        title = _clean_place_title(questions[idx]).strip()
+        if not title:
+            continue
+
+        source_url = _extract_source_url(answers[idx])
+        if not source_url:
+            urls = _extract_urls(answers[idx])
+            source_url = urls[0] if urls else None
+        if not source_url:
+            continue
+
+        title_key = title.lower()
+        if title_key in seen_titles or source_url in seen_urls:
+            continue
+
+        seen_titles.add(title_key)
+        seen_urls.add(source_url)
+        places.append((title, source_url))
+
+        if len(places) >= max_items:
+            break
+
+    places.sort(key=lambda item: len(item[0]), reverse=True)
+    return places
+
+
+def _link_named_places(answer_text: str, ranked: list[tuple[int, float]]) -> str:
+    text = answer_text
+    for title, url in _collect_linkable_places(ranked):
+        escaped_title = re.escape(title)
+
+        text = re.sub(
+            rf"\*\*({escaped_title})\*\*",
+            lambda match: f"[{match.group(1)}]({url})",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(
+            rf"(?<!\[)\b({escaped_title})\b(?!\]\()",
+            lambda match: f"[{match.group(1)}]({url})",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    return text
+
+
 def _collect_directory_places(intent: str, user_question: str) -> list[dict[str, str]]:
     config = CATEGORY_DIRECTORY_CONFIG.get(intent)
     if not config:
@@ -565,6 +619,10 @@ def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[in
     text = answer_text.strip()
     existing_urls = _extract_urls(text)
     place_query = _is_place_query(user_question)
+
+    if place_query and ranked:
+        text = _link_named_places(text, ranked)
+        existing_urls = _extract_urls(text)
 
     top_urls: list[str] = []
     for idx, _score in ranked[:3]:
