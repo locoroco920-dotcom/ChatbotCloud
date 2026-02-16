@@ -158,7 +158,7 @@ def _openai_fallback(user_question: str, faq_context: Optional[str]) -> Optional
             if faq_context:
                 user_content = (
                     "Use ONLY this FAQ context for facts, and answer in 1-2 short sentences. "
-                    "If context is missing details, say so briefly.\n\n"
+                    "If context is missing details, say so briefly. If you mention a place or event, include the most relevant URL from the context.\n\n"
                     f"Context:\n{faq_context}\n\nUser question: {user_question}"
                 )
             else:
@@ -198,6 +198,43 @@ def _extract_user_question(query: Query) -> str:
         raise HTTPException(status_code=400, detail="question is required")
     return user_question
 
+
+def _extract_urls(text: str) -> list[str]:
+    return re.findall(r"https?://[^\s)]+", text)
+
+
+def _build_related_question(user_question: str) -> str:
+    lower = user_question.lower()
+    if any(word in lower for word in ["eat", "food", "restaurant", "dining"]):
+        return "Wanna see a couple nearby spots with links too?"
+    if any(word in lower for word in ["event", "show", "concert", "game"]):
+        return "Want me to pull another upcoming event with the direct link?"
+    if any(word in lower for word in ["hotel", "stay", "lodging"]):
+        return "Need me to share another hotel option with a booking/info link?"
+    if any(word in lower for word in ["shop", "shopping"]):
+        return "Want another shopping option with the exact page link?"
+    return "Want another related recommendation with a direct link?"
+
+
+def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[int, float]]) -> str:
+    text = answer_text.strip()
+    existing_urls = _extract_urls(text)
+
+    top_urls: list[str] = []
+    for idx, _score in ranked[:3]:
+        for url in _extract_urls(answers[idx]):
+            if url not in top_urls:
+                top_urls.append(url)
+
+    if not existing_urls and top_urls:
+        text = f"{text}\n\nMore info: {top_urls[0]}"
+
+    follow_up = _build_related_question(user_question)
+    if follow_up.lower() not in text.lower():
+        text = f"{text}\n\n{follow_up}"
+
+    return text
+
 def _generate_answer(user_question: str) -> Response:
     _load_faq_data_once()
 
@@ -205,9 +242,14 @@ def _generate_answer(user_question: str) -> Response:
     if user_question.lower().strip() in greeting_inputs:
         openai_response = _openai_fallback(user_question, None)
         if openai_response is not None:
+            openai_response.answer = _finalize_answer(openai_response.answer, user_question, [])
             return openai_response
         return Response(
-            answer="Hey! I'm Murray the Meadowlands ambassador. Ask me about places to eat, things to do, or local spots.",
+            answer=_finalize_answer(
+                "Hey! I'm Murray the Meadowlands ambassador. Ask me about places to eat, things to do, or local spots.",
+                user_question,
+                [],
+            ),
             confidence=0.8,
         )
 
@@ -225,13 +267,19 @@ def _generate_answer(user_question: str) -> Response:
     if openai_response is not None:
         if faq_context:
             openai_response.confidence = max(openai_response.confidence, min(0.92, best_similarity + 0.2))
+        openai_response.answer = _finalize_answer(openai_response.answer, user_question, ranked)
         return openai_response
 
     if ranked and best_similarity >= 0.15:
         best_idx = ranked[0][0]
-        return Response(answer=answers[best_idx], confidence=max(0.55, best_similarity))
+        return Response(
+            answer=_finalize_answer(answers[best_idx], user_question, ranked),
+            confidence=max(0.55, best_similarity),
+        )
 
-    return _fallback_answer(user_question)
+    fallback = _fallback_answer(user_question)
+    fallback.answer = _finalize_answer(fallback.answer, user_question, ranked)
+    return fallback
 
 
 @app.post("/ask", response_model=Response)
