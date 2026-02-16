@@ -92,6 +92,7 @@ KNOWN_CITIES = [
 ]
 
 EVENTS_CALENDAR_URL = "https://dev.mlcvb.com/meadowlands-calendar-of-events/"
+FOOD_DIRECTORY_URL = "https://dev.mlcvb.com/dining-culinary-experiences-in-the-meadowlands/"
 
 class Query(BaseModel):
     question: Optional[str] = None
@@ -315,15 +316,29 @@ def _build_food_listing_answer(user_question: str) -> Optional[str]:
     if not places:
         return None
 
+    if len(places) > 5:
+        if "pizza" in user_question.lower():
+            return (
+                "Ya got a ton of pizza options around here, so I’ll point ya straight to the dining directory: "
+                f"{FOOD_DIRECTORY_URL}"
+            )
+        return (
+            "There are a lotta food spots in the Meadowlands, so here’s the full dining directory: "
+            f"{FOOD_DIRECTORY_URL}"
+        )
+
     intro = "That's a tough call, ya know—there's no one best spot. Here are food options around the Meadowlands:"
     if "pizza" in user_question.lower():
         intro = "That's a tough call, ya know—no single best pizza spot. Here are pizza options around the Meadowlands:"
 
     lines = [intro, ""]
-    for place in places:
-        lines.append(f"[{place['name']}]({place['url']})")
+    display_places = places[:5]
+    for idx, place in enumerate(display_places, start=1):
+        lines.append(f"{idx}. [{place['name']}]({place['url']})")
         lines.append(place["location"])
         lines.append(place["description"])
+        if idx < len(display_places):
+            lines.append("--------------------")
         lines.append("")
 
     return "\n".join(lines).strip()
