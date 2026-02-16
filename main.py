@@ -158,7 +158,8 @@ def _openai_fallback(user_question: str, faq_context: Optional[str]) -> Optional
             if faq_context:
                 user_content = (
                     "Use ONLY this FAQ context for facts, and answer in 1-2 short sentences. "
-                    "If context is missing details, say so briefly. If you mention a place or event, include the most relevant URL from the context.\n\n"
+                    "If context is missing details, say so briefly. If the user asks for the best/favorite, do not choose one winner—give multiple options fairly. "
+                    "Only include links when referring to specific places/events.\n\n"
                     f"Context:\n{faq_context}\n\nUser question: {user_question}"
                 )
             else:
@@ -169,7 +170,7 @@ def _openai_fallback(user_question: str, faq_context: Optional[str]) -> Optional
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are Murray, a Meadowlands ambassador with a friendly Jersey voice. Keep replies to 1-2 short sentences, use light Jersey phrasing (like 'ya know', 'down the shore', 'fuhgeddaboutit' sparingly), and stay helpful.",
+                        "content": "You are Murray, a friendly Meadowlands local with a conversational Jersey accent. Sound natural, warm, and casual. If asked for the best/favorite, say it's a tough call and give multiple good options instead of one winner.",
                     },
                     {"role": "user", "content": user_content},
                 ],
@@ -203,22 +204,51 @@ def _extract_urls(text: str) -> list[str]:
     return re.findall(r"https?://[^\s)]+", text)
 
 
+def _is_place_query(user_question: str) -> bool:
+    lower = user_question.lower()
+    place_terms = [
+        "eat",
+        "food",
+        "restaurant",
+        "dining",
+        "pizza",
+        "hotel",
+        "stay",
+        "event",
+        "concert",
+        "show",
+        "attraction",
+        "visit",
+        "shop",
+        "shopping",
+        "where",
+        "place",
+    ]
+    return any(term in lower for term in place_terms)
+
+
+def _has_preference_intent(user_question: str) -> bool:
+    lower = user_question.lower()
+    return any(term in lower for term in ["best", "favorite", "top", "number one", "recommend"]) 
+
+
 def _build_related_question(user_question: str) -> str:
     lower = user_question.lower()
     if any(word in lower for word in ["eat", "food", "restaurant", "dining"]):
-        return "Wanna see a couple nearby spots with links too?"
+        return "Want to know about other places to eat?"
     if any(word in lower for word in ["event", "show", "concert", "game"]):
-        return "Want me to pull another upcoming event with the direct link?"
+        return "Want me to share a few more events around the same time?"
     if any(word in lower for word in ["hotel", "stay", "lodging"]):
-        return "Need me to share another hotel option with a booking/info link?"
+        return "Want me to list a few more hotel options nearby?"
     if any(word in lower for word in ["shop", "shopping"]):
-        return "Want another shopping option with the exact page link?"
-    return "Want another related recommendation with a direct link?"
+        return "Want a couple more shopping spots to compare?"
+    return "Want another related option I can pull for you?"
 
 
 def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[int, float]]) -> str:
     text = answer_text.strip()
     existing_urls = _extract_urls(text)
+    place_query = _is_place_query(user_question)
 
     top_urls: list[str] = []
     for idx, _score in ranked[:3]:
@@ -226,8 +256,9 @@ def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[in
             if url not in top_urls:
                 top_urls.append(url)
 
-    if not existing_urls and top_urls:
-        text = f"{text}\n\nMore info: {top_urls[0]}"
+    if place_query and not existing_urls and top_urls:
+        link_lines = "\n".join(top_urls[:3])
+        text = f"{text}\n\nLinks:\n{link_lines}"
 
     follow_up = _build_related_question(user_question)
     if follow_up.lower() not in text.lower():
@@ -262,6 +293,21 @@ def _generate_answer(user_question: str) -> Response:
         for idx, _score in ranked:
             snippets.append(f"Q: {questions[idx]}\nA: {answers[idx]}")
         faq_context = "\n\n".join(snippets)
+
+    if _has_preference_intent(user_question) and ranked:
+        top_entries = []
+        for idx, _score in ranked[:3]:
+            title = questions[idx].replace("What should visitors know about ", "").strip(" ?")
+            urls = _extract_urls(answers[idx])
+            if urls:
+                top_entries.append(f"- {title}: {urls[0]}")
+            else:
+                top_entries.append(f"- {title}")
+        answer_text = "That's a tough call, ya know—there isn't just one best spot. Here are a few solid options:\n" + "\n".join(top_entries)
+        return Response(
+            answer=_finalize_answer(answer_text, user_question, ranked),
+            confidence=max(0.65, best_similarity),
+        )
 
     openai_response = _openai_fallback(user_question, faq_context)
     if openai_response is not None:
