@@ -8,6 +8,8 @@ from typing import Optional
 import logging
 import re
 from difflib import SequenceMatcher
+import requests
+from bs4 import BeautifulSoup
 from openai import OpenAI
 
 # Configure logging
@@ -88,6 +90,8 @@ KNOWN_CITIES = [
     "Harrison",
     "Saddle Brook",
 ]
+
+EVENTS_CALENDAR_URL = "https://dev.mlcvb.com/meadowlands-calendar-of-events/"
 
 class Query(BaseModel):
     question: Optional[str] = None
@@ -325,6 +329,65 @@ def _build_food_listing_answer(user_question: str) -> Optional[str]:
     return "\n".join(lines).strip()
 
 
+def _is_upcoming_events_query(user_question: str) -> bool:
+    lower = user_question.lower()
+    return _intent_label(user_question) == "event" and any(
+        token in lower for token in ["upcoming", "next", "coming up", "this week", "events"]
+    )
+
+
+def _fetch_upcoming_events(limit: int = 5) -> list[tuple[str, str]]:
+    candidate_urls = ["https://dev.mlcvb.com/", EVENTS_CALENDAR_URL]
+    seen_names: set[str] = set()
+    events: list[tuple[str, str]] = []
+
+    for url in candidate_urls:
+        try:
+            response = requests.get(url, timeout=12)
+            if response.status_code >= 400:
+                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+            text = soup.get_text("\n", strip=True)
+
+            matches = re.findall(r"\n([^\n]{4,140})\n\s*Date:\s*([^\n]{4,120})", "\n" + text)
+            for raw_name, raw_date in matches:
+                name = re.sub(r"\s+", " ", raw_name).strip()
+                date_text = re.sub(r"\s+", " ", raw_date).strip()
+
+                if name.lower() in seen_names:
+                    continue
+                if any(block in name.lower() for block in ["upcoming events", "image", "menu", "cookie"]):
+                    continue
+
+                seen_names.add(name.lower())
+                events.append((name, date_text))
+                if len(events) >= limit:
+                    return events
+        except Exception:
+            continue
+
+    return events[:limit]
+
+
+def _build_upcoming_events_answer(user_question: str) -> Optional[str]:
+    if not _is_upcoming_events_query(user_question):
+        return None
+
+    events = _fetch_upcoming_events(limit=5)
+    if not events:
+        return (
+            "Lemme check the schedule for ya — I couldn't pull the live list right this second, "
+            f"but here's the full events calendar: {EVENTS_CALENDAR_URL}"
+        )
+
+    lines = ["You got it — here are the next 5 upcoming events in the Meadowlands:", ""]
+    for index, (name, date_text) in enumerate(events, start=1):
+        lines.append(f"{index}. {name} ({date_text})")
+    lines.append("")
+    lines.append(f"Full events calendar: {EVENTS_CALENDAR_URL}")
+    return "\n".join(lines)
+
+
 def _is_place_query(user_question: str) -> bool:
     lower = user_question.lower()
     place_terms = [
@@ -453,6 +516,13 @@ def _generate_answer(user_question: str) -> Response:
 
     ranked = _rank_faq_candidates(user_question, top_k=3)
     best_similarity = ranked[0][1] if ranked else 0.0
+
+    upcoming_events_answer = _build_upcoming_events_answer(user_question)
+    if upcoming_events_answer is not None:
+        return Response(
+            answer=_finalize_answer(upcoming_events_answer, user_question, ranked),
+            confidence=max(0.75, best_similarity),
+        )
 
     food_listing_answer = _build_food_listing_answer(user_question)
     if food_listing_answer is not None:
