@@ -305,12 +305,23 @@ def _extract_location(answer_text: str, url: str) -> str:
     return "Meadowlands, NJ"
 
 
-def _collect_linkable_places(ranked: list[tuple[int, float]], max_items: int = 10) -> list[tuple[str, str]]:
+def _collect_linkable_places(
+    user_question: str,
+    ranked: list[tuple[int, float]],
+    max_items: int = 40,
+) -> list[tuple[str, str]]:
     places: list[tuple[str, str]] = []
     seen_titles: set[str] = set()
     seen_urls: set[str] = set()
 
-    for idx, _score in ranked:
+    candidate_indexes: list[int] = [idx for idx, _score in ranked]
+    for idx in range(len(questions)):
+        if idx in candidate_indexes:
+            continue
+        if _is_candidate_relevant(user_question, idx):
+            candidate_indexes.append(idx)
+
+    for idx in candidate_indexes:
         title = _clean_place_title(questions[idx]).strip()
         if not title:
             continue
@@ -337,24 +348,34 @@ def _collect_linkable_places(ranked: list[tuple[int, float]], max_items: int = 1
     return places
 
 
-def _link_named_places(answer_text: str, ranked: list[tuple[int, float]]) -> str:
+def _build_title_variants(title: str) -> list[str]:
+    variants = {title.strip()}
+    if " and " in title.lower():
+        variants.add(re.sub(r"\band\b", "&", title, flags=re.IGNORECASE))
+    if "&" in title:
+        variants.add(title.replace("&", "and"))
+    return sorted((variant.strip() for variant in variants if variant.strip()), key=len, reverse=True)
+
+
+def _link_named_places(answer_text: str, user_question: str, ranked: list[tuple[int, float]]) -> str:
     text = answer_text
-    for title, url in _collect_linkable_places(ranked):
-        escaped_title = re.escape(title)
+    for title, url in _collect_linkable_places(user_question, ranked):
+        for variant in _build_title_variants(title):
+            escaped_title = re.escape(variant)
 
-        text = re.sub(
-            rf"\*\*({escaped_title})\*\*",
-            lambda match: f"[{match.group(1)}]({url})",
-            text,
-            flags=re.IGNORECASE,
-        )
+            text = re.sub(
+                rf"\*\*({escaped_title})\*\*",
+                lambda match: f"[{match.group(1)}]({url})",
+                text,
+                flags=re.IGNORECASE,
+            )
 
-        text = re.sub(
-            rf"(?<!\[)\b({escaped_title})\b(?!\]\()",
-            lambda match: f"[{match.group(1)}]({url})",
-            text,
-            flags=re.IGNORECASE,
-        )
+            text = re.sub(
+                rf"(?<!\[)\b({escaped_title})\b(?!\]\()",
+                lambda match: f"[{match.group(1)}]({url})",
+                text,
+                flags=re.IGNORECASE,
+            )
 
     return text
 
@@ -515,6 +536,12 @@ def _is_place_query(user_question: str) -> bool:
         "restaurant",
         "dining",
         "pizza",
+        "bar",
+        "bars",
+        "biergarten",
+        "pub",
+        "cocktail",
+        "drinks",
         "hotel",
         "stay",
         "event",
@@ -541,7 +568,7 @@ def _has_preference_intent(user_question: str) -> bool:
 
 def _intent_label(user_question: str) -> str:
     lower = user_question.lower()
-    if any(word in lower for word in ["eat", "food", "restaurant", "dining", "pizza", "burger"]):
+    if any(word in lower for word in ["eat", "food", "restaurant", "dining", "pizza", "burger", "bar", "bars", "biergarten", "pub", "cocktail", "drinks"]):
         return "food"
     if any(word in lower for word in ["event", "show", "concert", "game", "calendar"]):
         return "event"
@@ -570,7 +597,7 @@ def _is_candidate_relevant(user_question: str, idx: int) -> bool:
     text = f"{question_text} {answer_text}"
 
     if intent == "food":
-        return any(token in text for token in ["restaurant", "dining", "pizza", "culinary", "/restaurant/"])
+        return any(token in text for token in ["restaurant", "dining", "pizza", "culinary", "bar", "pub", "cocktail", "biergarten", "/restaurant/"])
     if intent == "event":
         return any(token in text for token in ["event", "concert", "calendar", "show", "/event/"])
     if intent == "hotel":
@@ -621,7 +648,7 @@ def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[in
     place_query = _is_place_query(user_question)
 
     if place_query and ranked:
-        text = _link_named_places(text, ranked)
+        text = _link_named_places(text, user_question, ranked)
         existing_urls = _extract_urls(text)
 
     top_urls: list[str] = []
