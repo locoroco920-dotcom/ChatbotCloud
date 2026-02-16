@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.responses import Response as FastAPIResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, cast
 import logging
 import re
 from difflib import SequenceMatcher
@@ -93,6 +93,39 @@ KNOWN_CITIES = [
 
 EVENTS_CALENDAR_URL = "https://dev.mlcvb.com/meadowlands-calendar-of-events/"
 FOOD_DIRECTORY_URL = "https://dev.mlcvb.com/dining-culinary-experiences-in-the-meadowlands/"
+
+CATEGORY_DIRECTORY_CONFIG: dict[str, dict[str, object]] = {
+    "food": {
+        "url": FOOD_DIRECTORY_URL,
+        "url_markers": ["/restaurant/"],
+        "label": "food spots",
+    },
+    "hotel": {
+        "url": "https://dev.mlcvb.com/hotels/",
+        "url_markers": ["/hotel/"],
+        "label": "hotel options",
+    },
+    "shopping": {
+        "url": "https://dev.mlcvb.com/shopping/",
+        "url_markers": ["/shopping/"],
+        "label": "shopping spots",
+    },
+    "attraction": {
+        "url": "https://dev.mlcvb.com/attractions/",
+        "url_markers": ["/attractions/"],
+        "label": "attractions",
+    },
+    "service": {
+        "url": "https://dev.mlcvb.com/services/",
+        "url_markers": ["/services/"],
+        "label": "visitor services",
+    },
+    "meeting": {
+        "url": "https://dev.mlcvb.com/meeting-facilities/",
+        "url_markers": ["/meeting_facilities/", "/meeting-facilities/"],
+        "label": "meeting facilities",
+    },
+}
 
 class Query(BaseModel):
     question: Optional[str] = None
@@ -272,9 +305,14 @@ def _extract_location(answer_text: str, url: str) -> str:
     return "Meadowlands, NJ"
 
 
-def _collect_food_places(user_question: str) -> list[dict[str, str]]:
+def _collect_directory_places(intent: str, user_question: str) -> list[dict[str, str]]:
+    config = CATEGORY_DIRECTORY_CONFIG.get(intent)
+    if not config:
+        return []
+
+    url_markers = cast(list[str], config["url_markers"])
     lower = user_question.lower()
-    pizza_mode = "pizza" in lower
+    pizza_mode = intent == "food" and "pizza" in lower
     places: list[dict[str, str]] = []
     seen_urls: set[str] = set()
 
@@ -282,7 +320,7 @@ def _collect_food_places(user_question: str) -> list[dict[str, str]]:
         source_url = _extract_source_url(answer_text)
         if not source_url:
             continue
-        if "/restaurant/" not in source_url:
+        if not any(marker in source_url for marker in url_markers):
             continue
 
         searchable = f"{question_text} {answer_text}".lower()
@@ -309,27 +347,32 @@ def _collect_food_places(user_question: str) -> list[dict[str, str]]:
     return places
 
 
-def _build_food_listing_answer(user_question: str) -> Optional[str]:
-    if _intent_label(user_question) != "food":
+def _build_category_listing_answer(user_question: str) -> Optional[str]:
+    intent = _intent_label(user_question)
+    if intent not in CATEGORY_DIRECTORY_CONFIG:
         return None
 
-    places = _collect_food_places(user_question)
+    places = _collect_directory_places(intent, user_question)
     if not places:
         return None
 
+    config = CATEGORY_DIRECTORY_CONFIG[intent]
+    category_directory_url = str(config["url"])
+    category_label = str(config["label"])
+
     if len(places) > 5:
-        if "pizza" in user_question.lower():
+        if intent == "food" and "pizza" in user_question.lower():
             return (
                 "Ya got a ton of pizza options around here, so I’ll point ya straight to the dining directory: "
-                f"{FOOD_DIRECTORY_URL}"
+                f"{category_directory_url}"
             )
         return (
-            "There are a lotta food spots in the Meadowlands, so here’s the full dining directory: "
-            f"{FOOD_DIRECTORY_URL}"
+            f"There are a lotta {category_label} in the Meadowlands, so here’s the full directory: "
+            f"{category_directory_url}"
         )
 
-    intro = "That's a tough call, ya know—there's no one best spot. Here are food options around the Meadowlands:"
-    if "pizza" in user_question.lower():
+    intro = f"That's a tough call, ya know—there's no one best spot. Here are {category_label} around the Meadowlands:"
+    if intent == "food" and "pizza" in user_question.lower():
         intro = "That's a tough call, ya know—no single best pizza spot. Here are pizza options around the Meadowlands:"
 
     lines = [intro, ""]
@@ -386,8 +429,14 @@ def _fetch_upcoming_events(limit: int = 5) -> list[tuple[str, str]]:
 
 
 def _build_upcoming_events_answer(user_question: str) -> Optional[str]:
-    if not _is_upcoming_events_query(user_question):
+    if _intent_label(user_question) != "event":
         return None
+
+    if not _is_upcoming_events_query(user_question):
+        return (
+            "For events, the best place to check is the Meadowlands Chamber calendar: "
+            f"{EVENTS_CALENDAR_URL}"
+        )
 
     events = _fetch_upcoming_events(limit=5)
     if not events:
@@ -418,9 +467,13 @@ def _is_place_query(user_question: str) -> bool:
         "concert",
         "show",
         "attraction",
+        "things to do",
         "visit",
         "shop",
         "shopping",
+        "service",
+        "meeting",
+        "convention",
         "where",
         "place",
     ]
@@ -442,6 +495,12 @@ def _intent_label(user_question: str) -> str:
         return "hotel"
     if any(word in lower for word in ["shop", "shopping", "store", "mall"]):
         return "shopping"
+    if any(word in lower for word in ["attraction", "things to do", "activity", "activities", "entertainment", "museum"]):
+        return "attraction"
+    if any(word in lower for word in ["service", "transportation", "shuttle", "visitor service", "limo", "transit"]):
+        return "service"
+    if any(word in lower for word in ["meeting", "meetings", "convention", "conference", "facility", "facilities"]):
+        return "meeting"
     return "general"
 
 
@@ -464,6 +523,12 @@ def _is_candidate_relevant(user_question: str, idx: int) -> bool:
         return any(token in text for token in ["hotel", "hospitality", "/hotel/"])
     if intent == "shopping":
         return any(token in text for token in ["shopping", "shop", "store", "mall"])
+    if intent == "attraction":
+        return any(token in text for token in ["attraction", "things to do", "entertainment", "/attractions/"])
+    if intent == "service":
+        return any(token in text for token in ["service", "transportation", "transit", "limo", "/services/"])
+    if intent == "meeting":
+        return any(token in text for token in ["meeting", "conference", "convention", "facility", "/meeting_facilities/"])
     return True
 
 
@@ -487,6 +552,12 @@ def _build_related_question(user_question: str) -> str:
         return "Want me to list a few more hotel options nearby?"
     if intent == "shopping":
         return "Want a couple more shopping spots to compare?"
+    if intent == "attraction":
+        return "Want a few more attractions to check out?"
+    if intent == "service":
+        return "Need a couple more service or transportation options?"
+    if intent == "meeting":
+        return "Want me to pull a few more meeting facility options?"
     return "Want me to help with another question about Meadowlands places or events?"
 
 
@@ -540,10 +611,10 @@ def _generate_answer(user_question: str) -> Response:
             confidence=max(0.75, best_similarity),
         )
 
-    food_listing_answer = _build_food_listing_answer(user_question)
-    if food_listing_answer is not None:
+    category_listing_answer = _build_category_listing_answer(user_question)
+    if category_listing_answer is not None:
         return Response(
-            answer=_finalize_answer(food_listing_answer, user_question, ranked),
+            answer=_finalize_answer(category_listing_answer, user_question, ranked),
             confidence=max(0.72, best_similarity),
         )
 
