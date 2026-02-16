@@ -232,17 +232,62 @@ def _has_preference_intent(user_question: str) -> bool:
     return any(term in lower for term in ["best", "favorite", "top", "number one", "recommend"]) 
 
 
-def _build_related_question(user_question: str) -> str:
+def _intent_label(user_question: str) -> str:
     lower = user_question.lower()
-    if any(word in lower for word in ["eat", "food", "restaurant", "dining"]):
-        return "Want to know about other places to eat?"
-    if any(word in lower for word in ["event", "show", "concert", "game"]):
-        return "Want me to share a few more events around the same time?"
+    if any(word in lower for word in ["eat", "food", "restaurant", "dining", "pizza", "burger"]):
+        return "food"
+    if any(word in lower for word in ["event", "show", "concert", "game", "calendar"]):
+        return "event"
     if any(word in lower for word in ["hotel", "stay", "lodging"]):
+        return "hotel"
+    if any(word in lower for word in ["shop", "shopping", "store", "mall"]):
+        return "shopping"
+    return "general"
+
+
+def _is_generic_info_question(question_text: str) -> bool:
+    lower = question_text.lower().strip()
+    return lower.startswith("where can i find information about")
+
+
+def _is_candidate_relevant(user_question: str, idx: int) -> bool:
+    intent = _intent_label(user_question)
+    question_text = questions[idx].lower()
+    answer_text = answers[idx].lower()
+    text = f"{question_text} {answer_text}"
+
+    if intent == "food":
+        return any(token in text for token in ["restaurant", "dining", "pizza", "culinary", "/restaurant/"])
+    if intent == "event":
+        return any(token in text for token in ["event", "concert", "calendar", "show", "/event/"])
+    if intent == "hotel":
+        return any(token in text for token in ["hotel", "hospitality", "/hotel/"])
+    if intent == "shopping":
+        return any(token in text for token in ["shopping", "shop", "store", "mall"])
+    return True
+
+
+def _should_add_follow_up(user_question: str) -> bool:
+    normalized = user_question.lower().strip()
+    greeting_inputs = {"hi", "hello", "hey", "yo", "sup", "thanks", "thank you"}
+    if normalized in greeting_inputs:
+        return False
+    if "?" in user_question:
+        return True
+    return normalized.startswith(("what", "where", "when", "how", "who", "which", "can", "do", "is", "are"))
+
+
+def _build_related_question(user_question: str) -> str:
+    intent = _intent_label(user_question)
+    if intent == "food":
+        return "Want to know about other places to eat?"
+    if intent == "event":
+        return "Want me to share a few more events around the same time?"
+    if intent == "hotel":
         return "Want me to list a few more hotel options nearby?"
-    if any(word in lower for word in ["shop", "shopping"]):
+    if intent == "shopping":
         return "Want a couple more shopping spots to compare?"
-    return "Want another related option I can pull for you?"
+    return "Want me to help with another question about Meadowlands places or events?"
 
 
 def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[int, float]]) -> str:
@@ -260,9 +305,10 @@ def _finalize_answer(answer_text: str, user_question: str, ranked: list[tuple[in
         link_lines = "\n".join(top_urls[:3])
         text = f"{text}\n\nLinks:\n{link_lines}"
 
-    follow_up = _build_related_question(user_question)
-    if follow_up.lower() not in text.lower():
-        text = f"{text}\n\n{follow_up}"
+    if _should_add_follow_up(user_question):
+        follow_up = _build_related_question(user_question)
+        if follow_up.lower() not in text.lower():
+            text = f"{text}\n\n{follow_up}"
 
     return text
 
@@ -295,17 +341,41 @@ def _generate_answer(user_question: str) -> Response:
         faq_context = "\n\n".join(snippets)
 
     if _has_preference_intent(user_question) and ranked:
+        filtered_ranked = [
+            (idx, score)
+            for idx, score in ranked
+            if not _is_generic_info_question(questions[idx]) and _is_candidate_relevant(user_question, idx)
+        ]
+        candidate_ranked = filtered_ranked if filtered_ranked else ranked
+
         top_entries = []
-        for idx, _score in ranked[:3]:
+        seen_urls = set()
+        seen_titles = set()
+        for idx, _score in candidate_ranked:
             title = questions[idx].replace("What should visitors know about ", "").strip(" ?")
+            if title.lower() in seen_titles:
+                continue
             urls = _extract_urls(answers[idx])
-            if urls:
-                top_entries.append(f"- {title}: {urls[0]}")
+            selected_url = None
+            for url in urls:
+                if url not in seen_urls:
+                    selected_url = url
+                    seen_urls.add(url)
+                    break
+            if selected_url:
+                top_entries.append(f"- {title}: {selected_url}")
             else:
                 top_entries.append(f"- {title}")
+            seen_titles.add(title.lower())
+            if len(top_entries) >= 3:
+                break
+
+        if not top_entries:
+            top_entries = ["- I can share a few options if you tell me your preferred area or vibe."]
+
         answer_text = "That's a tough call, ya know—there isn't just one best spot. Here are a few solid options:\n" + "\n".join(top_entries)
         return Response(
-            answer=_finalize_answer(answer_text, user_question, ranked),
+            answer=_finalize_answer(answer_text, user_question, candidate_ranked),
             confidence=max(0.65, best_similarity),
         )
 
