@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import logging
+import re
 from difflib import SequenceMatcher
 from openai import OpenAI
 
@@ -120,9 +121,23 @@ def _fallback_answer(user_question: str) -> Response:
 
 def _rank_faq_candidates(user_question: str, top_k: int = 3) -> list[tuple[int, float]]:
     normalized_input = user_question.lower().strip()
+    input_tokens = set(re.findall(r"[a-z0-9]+", normalized_input))
+
+    def score_question(candidate_text: str) -> float:
+        candidate_lower = candidate_text.lower()
+        seq_score = SequenceMatcher(None, normalized_input, candidate_lower).ratio()
+
+        candidate_tokens = set(re.findall(r"[a-z0-9]+", candidate_lower))
+        if input_tokens:
+            overlap = len(input_tokens.intersection(candidate_tokens)) / max(1, len(input_tokens))
+        else:
+            overlap = 0.0
+
+        return (0.6 * overlap) + (0.4 * seq_score)
+
     scored: list[tuple[int, float]] = []
     for idx, candidate in enumerate(questions):
-        score = SequenceMatcher(None, normalized_input, candidate.lower()).ratio()
+        score = score_question(candidate)
         scored.append((idx, score))
     scored.sort(key=lambda item: item[1], reverse=True)
     return scored[:top_k]

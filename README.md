@@ -71,3 +71,14 @@ pip install -r requirements-dev.txt
 ```
 
 `requirements-dev.txt` includes `pyngrok`, while production `requirements.txt` does not.
+
+## Build FAQ from Full Website
+
+To make the chatbot understand the full MLCVB site (events, restaurants, directories, services), rebuild `faq_data.json` by crawling the site:
+
+```bash
+pip install -r requirements-dev.txt
+python build_site_faq.py --start-url https://dev.mlcvb.com/ --max-pages 220 --output faq_data.json
+```
+
+Then redeploy (or restart locally). The generated answers include source links so the bot can point users directly to relevant pages.
