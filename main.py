@@ -68,6 +68,27 @@ faq_data = None
 questions: list[str] = []
 answers: list[str] = []
 
+KNOWN_CITIES = [
+    "Secaucus",
+    "East Rutherford",
+    "Rutherford",
+    "Lyndhurst",
+    "Carlstadt",
+    "Moonachie",
+    "Jersey City",
+    "Weehawken",
+    "Hackensack",
+    "Paramus",
+    "North Bergen",
+    "Teterboro",
+    "Hasbrouck Heights",
+    "Clifton",
+    "Wayne",
+    "Teaneck",
+    "Harrison",
+    "Saddle Brook",
+]
+
 class Query(BaseModel):
     question: Optional[str] = None
     message: Optional[str] = None
@@ -204,6 +225,106 @@ def _extract_urls(text: str) -> list[str]:
     return re.findall(r"https?://[^\s)]+", text)
 
 
+def _extract_source_url(text: str) -> Optional[str]:
+    match = re.search(r"Source:\s*(https?://\S+)", text)
+    if not match:
+        return None
+    return match.group(1).rstrip(".,)")
+
+
+def _clean_place_title(question_text: str) -> str:
+    title = question_text.replace("What should visitors know about ", "")
+    title = title.replace("Where can I find information about ", "")
+    title = re.sub(r"\s*-\s*MLCVB.*$", "", title, flags=re.IGNORECASE).strip(" ?")
+    return title
+
+
+def _extract_short_description(answer_text: str) -> str:
+    text = re.sub(r"Source:\s*https?://\S+", "", answer_text).strip()
+    text = re.sub(r"Check out what other travelers say about", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    if not text:
+        return "Local Meadowlands dining option."
+    first_sentence = re.split(r"(?<=[.!?])\s+", text)[0].strip()
+    if len(first_sentence) > 95:
+        first_sentence = first_sentence[:92].rstrip() + "..."
+    return first_sentence or "Local Meadowlands dining option."
+
+
+def _extract_location(answer_text: str, url: str) -> str:
+    for city in KNOWN_CITIES:
+        if re.search(rf"\b{re.escape(city)}\b", answer_text, flags=re.IGNORECASE):
+            return f"{city}, NJ"
+    if "/secaucus" in url:
+        return "Secaucus, NJ"
+    if "/east-rutherford" in url:
+        return "East Rutherford, NJ"
+    if "/jersey-city" in url:
+        return "Jersey City, NJ"
+    if "/weehawken" in url:
+        return "Weehawken, NJ"
+    return "Meadowlands, NJ"
+
+
+def _collect_food_places(user_question: str) -> list[dict[str, str]]:
+    lower = user_question.lower()
+    pizza_mode = "pizza" in lower
+    places: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for question_text, answer_text in zip(questions, answers):
+        source_url = _extract_source_url(answer_text)
+        if not source_url:
+            continue
+        if "/restaurant/" not in source_url:
+            continue
+
+        searchable = f"{question_text} {answer_text}".lower()
+        if pizza_mode and not any(token in searchable for token in ["pizza", "pizzeria", "wood fired", "italian"]):
+            continue
+
+        if source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+
+        place_name = _clean_place_title(question_text)
+        location = _extract_location(answer_text, source_url)
+        short_description = _extract_short_description(answer_text)
+
+        places.append(
+            {
+                "name": place_name,
+                "url": source_url,
+                "location": location,
+                "description": short_description,
+            }
+        )
+
+    return places
+
+
+def _build_food_listing_answer(user_question: str) -> Optional[str]:
+    if _intent_label(user_question) != "food":
+        return None
+
+    places = _collect_food_places(user_question)
+    if not places:
+        return None
+
+    intro = "That's a tough call, ya know—there's no one best spot. Here are food options around the Meadowlands:"
+    if "pizza" in user_question.lower():
+        intro = "That's a tough call, ya know—no single best pizza spot. Here are pizza options around the Meadowlands:"
+
+    lines = [intro, ""]
+    for place in places:
+        lines.append(f"[{place['name']}]({place['url']})")
+        lines.append(place["location"])
+        lines.append(place["description"])
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def _is_place_query(user_question: str) -> bool:
     lower = user_question.lower()
     place_terms = [
@@ -332,6 +453,13 @@ def _generate_answer(user_question: str) -> Response:
 
     ranked = _rank_faq_candidates(user_question, top_k=3)
     best_similarity = ranked[0][1] if ranked else 0.0
+
+    food_listing_answer = _build_food_listing_answer(user_question)
+    if food_listing_answer is not None:
+        return Response(
+            answer=_finalize_answer(food_listing_answer, user_question, ranked),
+            confidence=max(0.72, best_similarity),
+        )
 
     faq_context = None
     if ranked and best_similarity >= 0.12:
