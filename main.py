@@ -91,8 +91,8 @@ KNOWN_CITIES = [
     "Saddle Brook",
 ]
 
-EVENTS_CALENDAR_URL = "https://dev.mlcvb.com/meadowlands-calendar-of-events/"
-FOOD_DIRECTORY_URL = "https://dev.mlcvb.com/dining-culinary-experiences-in-the-meadowlands/"
+EVENTS_CALENDAR_URL = "https://mlcvb.com/meadowlands-calendar-of-events/"
+FOOD_DIRECTORY_URL = "https://mlcvb.com/dining-culinary-experiences-in-the-meadowlands/"
 
 CATEGORY_DIRECTORY_CONFIG: dict[str, dict[str, object]] = {
     "food": {
@@ -101,27 +101,27 @@ CATEGORY_DIRECTORY_CONFIG: dict[str, dict[str, object]] = {
         "label": "food spots",
     },
     "hotel": {
-        "url": "https://dev.mlcvb.com/hotels/",
+        "url": "https://mlcvb.com/hotels/",
         "url_markers": ["/hotel/"],
         "label": "hotel options",
     },
     "shopping": {
-        "url": "https://dev.mlcvb.com/shopping/",
+        "url": "https://mlcvb.com/shopping/",
         "url_markers": ["/shopping/"],
         "label": "shopping spots",
     },
     "attraction": {
-        "url": "https://dev.mlcvb.com/attractions/",
+        "url": "https://mlcvb.com/attractions/",
         "url_markers": ["/attractions/"],
         "label": "attractions",
     },
     "service": {
-        "url": "https://dev.mlcvb.com/services/",
+        "url": "https://mlcvb.com/services/",
         "url_markers": ["/services/"],
         "label": "visitor services",
     },
     "meeting": {
-        "url": "https://dev.mlcvb.com/meeting-facilities/",
+        "url": "https://mlcvb.com/meeting-facilities/",
         "url_markers": ["/meeting_facilities/", "/meeting-facilities/"],
         "label": "meeting facilities",
     },
@@ -471,7 +471,7 @@ def _is_upcoming_events_query(user_question: str) -> bool:
 
 
 def _fetch_upcoming_events(limit: int = 5) -> list[tuple[str, str]]:
-    candidate_urls = ["https://dev.mlcvb.com/", EVENTS_CALENDAR_URL]
+    candidate_urls = ["https://mlcvb.com/", EVENTS_CALENDAR_URL]
     seen_names: set[str] = set()
     events: list[tuple[str, str]] = []
 

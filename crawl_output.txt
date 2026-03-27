@@ -1,0 +1,3 @@
+Crawled pages: 468
+FAQ entries written: 852
+Output: faq_data.json

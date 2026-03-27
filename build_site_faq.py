@@ -131,7 +131,7 @@ def strip_noise_nodes(soup: BeautifulSoup) -> None:
         ".share",
         ".social",
         ".breadcrumb",
-        # Site-specific noise containers on dev.mlcvb.com
+        # Site-specific noise containers on mlcvb.com
         ".elementor-location-footer",
         ".site-footer",
         "#site-footer",
@@ -319,7 +319,7 @@ def crawl_site(
     session.max_redirects = 5
     session.headers.update(
         {
-            "User-Agent": "MLCVB-FAQ-Bot/1.0 (+https://dev.mlcvb.com)",
+            "User-Agent": "MLCVB-FAQ-Bot/1.0 (+https://mlcvb.com)",
             "Accept": "text/html,application/xhtml+xml",
         }
     )
@@ -424,7 +424,7 @@ def records_to_faq(records: Iterable[PageRecord]) -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build faq_data.json from a website crawl")
-    parser.add_argument("--start-url", default="https://dev.mlcvb.com/", help="Root URL to crawl")
+    parser.add_argument("--start-url", default="https://mlcvb.com/", help="Root URL to crawl")
     parser.add_argument("--max-pages", type=int, default=1000, help="Maximum number of pages to crawl")
     parser.add_argument("--timeout", type=int, default=20, help="HTTP request timeout in seconds")
     parser.add_argument(
