@@ -78,7 +78,24 @@ To make the chatbot understand the full MLCVB site (events, restaurants, directo
 
 ```bash
 pip install -r requirements-dev.txt
-python build_site_faq.py --start-url https://dev.mlcvb.com/ --max-pages 220 --output faq_data.json
+python build_site_faq.py --start-url https://dev.mlcvb.com/ --max-pages 260 --output faq_data.json
 ```
+
+Useful options for website updates:
+
+```bash
+# Crawl updated content from sitemap first, skip noisy paths, and throttle requests
+python build_site_faq.py \
+  --start-url https://dev.mlcvb.com/ \
+  --max-pages 300 \
+  --exclude-path "/tag/|/author/|/search|calendar" \
+  --delay-ms 150 \
+  --output faq_data.json
+```
+
+Optional flags:
+- `--timeout 30` to raise per-request timeout
+- `--include-path "events|restaurants|things-to-do"` to focus crawl scope
+- `--no-sitemap` to disable sitemap discovery if needed
 
 Then redeploy (or restart locally). The generated answers include source links so the bot can point users directly to relevant pages.
